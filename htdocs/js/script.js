@@ -48,7 +48,7 @@ var getControl = function(array, name, iface)
 
 var getControls = function(data)
 {
-	//console.log(data);
+//	console.log(data);
 	var controls = [];
 	
 	for (var i in data) {
@@ -61,6 +61,7 @@ var getControls = function(data)
 			delete el.iface;
 			control[el.name.replace(commonName + " ", "").toLowerCase()] = el;
 		} else {
+//			console.log(el);
 			var control = {};
 			if (el.type === "ENUMERATED") {
 				control = {source: el, name: el.name, iface: el.iface};
@@ -78,7 +79,6 @@ var getControls = function(data)
 			controls.push(control);
 		}
 	}
-	
 	//console.log(controls);
 	return controls;
 };
@@ -217,7 +217,7 @@ var changeVolume = function(id, i, value)
 	var elements = document.getElementsByClassName(id + '_volume');
 	var volumes = [];
 	for (var i = 0; i < elements.length; i++) {
-		volumes.push(elements[i].value);
+		volumes.push(Math.round(100 * elements[i].value / volumeElements[i].getAttribute('max')) );
 	}
 	if (typeof id === "string" && id.substr(0, 1) === 'e') {
 		sendRequest('PUT', "equalizer/" + id.substr(1) + "/" + volumes.join("/") + "/");

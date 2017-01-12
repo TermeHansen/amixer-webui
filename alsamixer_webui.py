@@ -16,6 +16,8 @@ import socket
 import json
 from flask import Flask, Response
 import argparse
+
+import pickle
 try:
     # Python 2.x
     import ConfigParser
@@ -90,67 +92,70 @@ class Handler(Flask):
 
     def __get_controls__(self):
         try:
-            amixer = Popen(self.__get_amixer_command__(), stdout=PIPE)
-            amixer_channels = Popen(["grep", "-e", "control", "-e", "channels"], stdin=amixer.stdout, stdout=PIPE)
-            amixer_chandesc = self.__decode_string(amixer_channels.communicate()[0]).split("Simple mixer control ")[1:]
-
             amixer_contents = self.__decode_string(
-                Popen(self.__get_amixer_command__() + ["contents"], stdout=PIPE).communicate()[0])
+                Popen(self.__get_amixer_command__() + ["scontents","-M"], stdout=PIPE).communicate()[0])
         except OSError:
             return []
 
         interfaces = []
-        for i in amixer_contents.split("numid=")[1:]:
+        if self.equal:
+           self.equal_idx=[]
+        else:
+           self.standard_idx=[]
+        co=0
+        for i in amixer_contents.split("Simple mixer control")[1:]:
             lines = i.split("\n")
 
             interface = {
-                "id": int(lines[0].split(",")[0]),
-                "iface": lines[0].split(",")[1].replace("iface=", ""),
-                "name": lines[0].split(",")[2].replace("name=", "").replace("'", ""),
-                "type": lines[1].split(",")[0].replace("  ; type=", ""),
-                "access": lines[1].split(",")[1].replace("access=", ""),
+                "id": co, #int(lines[0].split(",")[0]),
+                "iface": u"MIXER", #lines[0].split(",")[1].replace("iface=", ""),
+                "name": lines[0].split("'")[1], # lines[0].split(",")[2].replace("name=", "").replace("'", ""),
+                "type": lines[1].split()[1], #lines[1].split(",")[0].replace("  ; type=", ""),
+                "access": u"rw------", #lines[1].split(",")[1].replace("access=", ""),
             }
 
-            if interface["type"] == "ENUMERATED":
+            if interface["type"] == "enum":
+                interface["type"]=u'ENUMERATED'
                 items = {}
-                for line in lines[2:-2]:
-                    pcs = line.split(" '")
-                    id = pcs[0].replace("  ; Item #", "")
-                    name = pcs[1][:-1]
-                    items[id] = name
+                for  idx, val in enumerate(lines[2].split("'")[1::2]):
+                    items[str(idx).decode('utf8')] = val
                 interface["items"] = items
                 interface["values"] = []
-                for value in lines[-2].replace("  : values=", "").split(","):
-                    interface["values"].append(int(value))
+                for val in lines[3].split("'")[1::2]:
+                    interface["values"].append(int( items.keys()[items.values().index(val)] ))
 
-            elif interface["type"] == "BOOLEAN":
+            elif "switch" in interface["type"]:
+                interface["type"]=u'BOOLEAN'
                 interface["values"] = []
-                for value in lines[-2].replace("  : values=", "").split(","):
-                    interface["values"].append(True if value == "on" else False)
+                for line in lines[2:]:
+                    if '[on]' in line: interface["values"].append(True)
+                    if '[off]' in line: interface["values"].append(False)
 
-            elif interface["type"] == "INTEGER":
-                interface["min"] = int(lines[1].split(",")[3].replace("min=", ""))
-                interface["max"] = int(lines[1].split(",")[4].replace("max=", ""))
-                interface["step"] = int(lines[1].split(",")[5].replace("step=", ""))
-                line = ""
-                for j in reversed(lines):
-                    if "  : values=" in j:
-                        line = j
-                        break
+            elif "volume" in interface["type"]:
+                interface["type"]=u'INTEGER'
+                interface["step"] = 0
+
                 interface["values"] = []
                 interface["channels"] = []
-                i = 0
-                for value in line.replace("  : values=", "").split(","):
-                    interface["values"].append(value)
-                    channel_desc = self.__get_channel_name__(amixer_chandesc, interface["name"], i)
-                    if channel_desc is not None:
-                        interface["channels"].append(channel_desc)
-                    i += 1
-                if len(interface["channels"]) != len(interface["values"]):
-                    interface.pop("channels", None)
+                for line in lines[3:]:
+                   if "Limits:" in line:
+                      interface["max"]=int(line.split()[-1])
+                      interface["min"]=int(line.split()[-3])
+                   if '%]' in line:
+                      interface["values"].append( re.findall('(\d+%)',line)[0][:-1] )
+                      interface["channels"].append( line.split(':')[0].strip() )
 
             interfaces.append(interface)
+            co+=1
+            if self.equal:
+               self.equal_idx.append(interface['name'])
+            else:
+               self.standard_idx.append(interface['name'])
 
+#        if not self.equal:
+#           fout=open('new.out','w')
+#           pickle.dump(interfaces,fout)
+#           fout.close()
         return interfaces
 
     def __get_equalizer__(self):
@@ -159,12 +164,12 @@ class Handler(Flask):
         self.equal = False
         return data
 
-    def __change_volume__(self, num_id, volumes_path):
+    def __change_volume__(self, name, volumes_path):
         volumes = []
         for volume in volumes_path:
             if volume != "" and is_digit(volume):
-                volumes.append(volume)
-        command = self.__get_amixer_command__() + ["cset", "numid=%s" % num_id, "--", ",".join(volumes)]
+                volumes.append(volume+'%')
+        command = self.__get_amixer_command__() + ["set", name, ",".join(volumes),"-M"]
         call(command)
 
     @staticmethod
@@ -237,6 +242,7 @@ def get_controls():
     }]"""
     data = json.dumps(app.__get_controls__())
     resp = Response(response=data, status=200, mimetype="application/json")
+    print(resp)
     return resp
 
 
@@ -275,7 +281,7 @@ def put_source(control_id, item):
 @app.route('/volume/<int:control_id>/<path:volume_path>', methods=['PUT'])
 def put_volume(control_id, volume_path):
     """Changes INTEGER channel volumes"""
-    app.__change_volume__(control_id, volume_path.split('/'))
+    app.__change_volume__(app.standard_idx[control_id], volume_path.split('/'))
     if os.geteuid() == 0:
         call(["alsactl", "store"])
     return ''
@@ -287,7 +293,7 @@ def put_equalizer(control_id, level_path):
     app.equal = True
     card = app.card
     app.card = None
-    app.__change_volume__(control_id, level_path.split('/'))
+    app.__change_volume__(app.equal_idx[control_id], level_path.split('/'))
     app.equal = False
     app.card = card
     if os.geteuid() == 0:

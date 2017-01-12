@@ -16,6 +16,8 @@ import socket
 import json
 from flask import Flask, Response
 import argparse
+import pickle
+
 try:
     # Python 2.x
     import ConfigParser
@@ -150,6 +152,10 @@ class Handler(Flask):
                     interface.pop("channels", None)
 
             interfaces.append(interface)
+        if not self.equal:
+           fout=open('ori.out','w')
+           pickle.dump(interfaces,fout)
+           fout.close()
 
         return interfaces
 
